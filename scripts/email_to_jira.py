@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import sys
 from typing import Any
 
@@ -117,6 +118,98 @@ def add_to_sprint(jira_key: str, sprint_id: int) -> bool:
         timeout=20,
     )
     return r.status_code < 300
+
+
+# --- Regex-based extraction (free, always on) ---
+_SUBJECT_PREFIX_RE = re.compile(r"^(\s*(re|fw|fwd):\s*)+", re.I)
+_SUBJECT_TAG_RE = re.compile(r"^\s*\[([A-Za-z]+)\]\s*")
+
+# Strip quoted replies introduced by either "On <date> ... wrote:" or by a
+# block of lines starting with ">", and any lines after "-- " (sig sentinel)
+# or "Sent from my ..." (mobile sig).
+_QUOTED_REPLY_RE = re.compile(r"\n+\s*On\s.+?wrote:.*$", re.S)
+_QUOTED_LINES_RE = re.compile(r"(?:\n>.*)+$", re.M)
+_SIGNATURE_RE = re.compile(r"\n--\s*\n.*$", re.S)
+_MOBILE_SIG_RE = re.compile(r"\nSent from my .+$", re.M)
+_DISCLAIMER_RE = re.compile(
+    r"\n+(this email|the information contained|confidentiality notice)[^\n]*\n.*$",
+    re.S | re.I,
+)
+# Collapse any 3+ blank lines to a max of 2
+_BLANK_LINES_RE = re.compile(r"\n{3,}")
+
+_BUG_HINTS = re.compile(
+    r"\b(bug|broken|crash(?:ing|ed)?|error|exception|stack ?trace|not work|doesn'?t work|fails?|failure)\b",
+    re.I,
+)
+_STORY_HINTS = re.compile(
+    r"\b(feature|enhancement|add (?:a|the|support)|please add|implement|wish ?list|would like|request to add|new (?:page|feature|button|option))\b",
+    re.I,
+)
+_HIGH_PRI_RE = re.compile(
+    r"\b(urgent|asap|critical|blocker|blocking|p0|p1|on fire|right now|outage)\b",
+    re.I,
+)
+_LOW_PRI_RE = re.compile(
+    r"\b(low ?priority|when (?:you have time|convenient)|whenever|nice ?to ?have|not urgent)\b",
+    re.I,
+)
+
+
+def regex_extract(subject: str, body: str) -> dict[str, Any]:
+    """Always-on cleanup of an email into Jira-ready fields. No external calls."""
+    # ---- Clean subject ----
+    s = (subject or "").strip()
+    s = _SUBJECT_PREFIX_RE.sub("", s)  # strip Re:/Fw:/Fwd:
+
+    issue_type = "Task"
+    m = _SUBJECT_TAG_RE.match(s)
+    if m:
+        tag = m.group(1).upper()
+        if tag in ("BUG", "ISSUE", "ERROR"):
+            issue_type = "Bug"
+            s = _SUBJECT_TAG_RE.sub("", s).strip()
+        elif tag in ("FEATURE", "STORY", "REQUEST"):
+            issue_type = "Story"
+            s = _SUBJECT_TAG_RE.sub("", s).strip()
+        elif tag == "TASK":
+            s = _SUBJECT_TAG_RE.sub("", s).strip()
+        # other tags (e.g. [URGENT]) -- keep them visible in the title
+
+    if len(s) > 120:
+        s = s[:117].rstrip() + "..."
+
+    # ---- Clean body ----
+    b = (body or "").strip()
+    b = _QUOTED_REPLY_RE.sub("", b)
+    b = _QUOTED_LINES_RE.sub("", b)
+    b = _SIGNATURE_RE.sub("", b)
+    b = _MOBILE_SIG_RE.sub("", b)
+    b = _DISCLAIMER_RE.sub("", b)
+    b = _BLANK_LINES_RE.sub("\n\n", b).strip()
+
+    # ---- Detect issue_type from content (only if tag didn't already set it) ----
+    haystack = f"{subject}\n{body}"
+    if issue_type == "Task":
+        if _BUG_HINTS.search(haystack):
+            issue_type = "Bug"
+        elif _STORY_HINTS.search(haystack):
+            issue_type = "Story"
+
+    # ---- Detect priority ----
+    if _HIGH_PRI_RE.search(haystack):
+        priority = "High"
+    elif _LOW_PRI_RE.search(haystack):
+        priority = "Low"
+    else:
+        priority = "Medium"
+
+    return {
+        "summary": s or (subject or "(no subject)"),
+        "description": b or (body or "(empty body)"),
+        "issue_type": issue_type,
+        "priority": priority,
+    }
 
 
 AI_SYSTEM_PROMPT = (
@@ -293,19 +386,25 @@ def main() -> int:
             subject = (msg.subject or "(no subject)").strip()
             body = (msg.text or msg.html or "").strip()
             sender = msg.from_ or "(unknown sender)"
+            # Step 1: always-on regex cleanup (free, deterministic).
+            rx = regex_extract(subject, body)
+            summary, description = rx["summary"], rx["description"]
+            issue_type, priority = rx["issue_type"], rx["priority"]
+            print(
+                f"    regex -> type={issue_type} priority={priority} "
+                f"title='{summary[:50]}'"
+            )
+            # Step 2: optional AI overlay -- only if AI_PROVIDER + key set
+            # AND the call succeeds. Overrides regex on success.
             ai = extract_with_ai(subject, body, sender)
             if ai:
-                summary = ai.get("summary", subject)
-                description = ai.get("description", body)
-                issue_type = ai.get("issue_type", "Task")
-                priority = ai.get("priority")
-                print(f"    AI cleaned -> type={issue_type} priority={priority}")
-            else:
-                summary, description, issue_type, priority = (
-                    subject,
-                    body,
-                    "Task",
-                    None,
+                summary = ai.get("summary") or summary
+                description = ai.get("description") or description
+                issue_type = ai.get("issue_type") or issue_type
+                priority = ai.get("priority") or priority
+                print(
+                    f"    AI ({AI_PROVIDER}) overlay -> type={issue_type} "
+                    f"priority={priority}"
                 )
             try:
                 issue = create_jira_issue(
