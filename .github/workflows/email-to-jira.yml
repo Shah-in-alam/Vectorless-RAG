@@ -42,4 +42,7 @@ jobs:
           JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
           GMAIL_LABEL: ${{ vars.GMAIL_LABEL || 'TaskFlow' }}
           MAX_EMAILS: ${{ github.event.inputs.max_emails || '20' }}
+          # AI extraction. Both empty -> script falls back to raw email.
+          AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
         run: python scripts/email_to_jira.py
