@@ -1,0 +1,46 @@
+name: Jira -> GitHub sync
+
+on:
+  # Once a day at 08:17 UTC. Off the round-hour rush so GitHub's
+  # scheduler honors it more predictably (round-hour crons can be
+  # delayed up to 2h during peak load).
+  # 08:17 UTC = 10:17 Belgium summer (CEST) / 09:17 winter (CET).
+  schedule:
+    - cron: '17 8 * * *'
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: 'How far back to look for new Jira issues (hours)'
+        required: false
+        default: '25'
+
+permissions:
+  contents: write  # branch creation for the Auto-branch node
+  issues: write
+
+concurrency:
+  group: jira-to-github-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install httpx
+
+      - name: Run sync
+        env:
+          JIRA_DOMAIN: ${{ secrets.JIRA_DOMAIN }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          LOOKBACK_HOURS: ${{ github.event.inputs.lookback_hours || '25' }}
+        run: python scripts/jira_to_github_sync.py
