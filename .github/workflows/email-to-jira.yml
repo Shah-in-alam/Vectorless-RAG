@@ -1,0 +1,45 @@
+name: Email -> Jira sync
+
+on:
+  # 08:12 UTC daily -- 5 min before the Jira->GitHub sync at 08:17,
+  # so a morning email cascades into a GitHub issue in one cycle.
+  # 08:12 UTC = 10:12 Belgium summer (CEST) / 09:12 winter (CET).
+  schedule:
+    - cron: '12 8 * * *'
+  workflow_dispatch:
+    inputs:
+      max_emails:
+        description: 'Hard cap on emails processed per run'
+        required: false
+        default: '20'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: email-to-jira-sync
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install httpx imap-tools
+
+      - name: Ingest emails to Jira
+        env:
+          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          JIRA_DOMAIN: ${{ secrets.JIRA_DOMAIN }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+          GMAIL_LABEL: ${{ vars.GMAIL_LABEL || 'TaskFlow' }}
+          MAX_EMAILS: ${{ github.event.inputs.max_emails || '20' }}
+        run: python scripts/email_to_jira.py
