@@ -53,6 +53,7 @@ MAX_EMAILS = int(os.environ.get("MAX_EMAILS", "20"))
 GMAIL_LABEL = os.environ.get("GMAIL_LABEL", "TaskFlow").strip() or "TaskFlow"
 AI_PROVIDER = os.environ.get("AI_PROVIDER", "").strip().lower()
 AI_API_KEY = os.environ.get("AI_API_KEY", "").strip()
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
 
 JIRA_BASE = f"https://{JIRA_DOMAIN}"
 _basic = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_API_TOKEN}".encode()).decode()
@@ -154,6 +155,29 @@ _LOW_PRI_RE = re.compile(
     r"\b(low ?priority|when (?:you have time|convenient)|whenever|nice ?to ?have|not urgent)\b",
     re.I,
 )
+
+
+def notify_slack(text: str, link_url: str | None = None) -> None:
+    """Fire-and-forget Slack message via Incoming Webhook. Silent on failure."""
+    if not SLACK_WEBHOOK_URL:
+        return
+    payload: dict[str, Any] = {"text": text}
+    if link_url:
+        payload["blocks"] = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": text},
+                "accessory": {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Open"},
+                    "url": link_url,
+                },
+            }
+        ]
+    try:
+        httpx.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
+    except Exception:
+        pass  # never let Slack failure block the pipeline
 
 
 def regex_extract(subject: str, body: str) -> dict[str, Any]:
@@ -415,6 +439,12 @@ def main() -> int:
                     print(f"  CREATED {key} -> Sprint  <- '{subject[:60]}' from {sender}")
                 else:
                     print(f"  CREATED {key} (Backlog) <- '{subject[:60]}' from {sender}")
+                jira_url = f"{JIRA_BASE}/browse/{key}"
+                notify_slack(
+                    f"🎫 *{key}*: {summary[:120]}\n"
+                    f"_From: {sender} · type: {issue_type} · priority: {priority or 'unset'}_",
+                    link_url=jira_url,
+                )
                 mailbox.flag(msg.uid, "\\Seen", True)
                 created += 1
             except Exception as e:
