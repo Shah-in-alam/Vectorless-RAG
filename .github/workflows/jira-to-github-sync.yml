@@ -43,4 +43,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           LOOKBACK_HOURS: ${{ github.event.inputs.lookback_hours || '25' }}
+          # Slack incoming-webhook URL. Empty -> script skips notifications.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python scripts/jira_to_github_sync.py
