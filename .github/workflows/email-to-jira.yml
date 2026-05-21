@@ -45,4 +45,6 @@ jobs:
           # AI extraction. Both empty -> script falls back to raw email.
           AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          # Slack incoming-webhook URL. Empty -> script skips notifications.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python scripts/email_to_jira.py
