@@ -37,6 +37,7 @@ GH_REPO = _required("GH_REPO")
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "1"))
 AUTO_BRANCH = os.environ.get("AUTO_BRANCH", "1").lower() not in ("0", "false", "no")
 BASE_BRANCH = os.environ.get("BASE_BRANCH", "main").strip() or "main"
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
 
 if JIRA_DOMAIN.startswith(("http://", "https://")):
     raise SystemExit(
@@ -142,6 +143,29 @@ def list_mirrored_jira_keys() -> set[str]:
     return keys
 
 
+def notify_slack(text: str, link_url: str | None = None) -> None:
+    """Fire-and-forget Slack message via Incoming Webhook. Silent on failure."""
+    if not SLACK_WEBHOOK_URL:
+        return
+    payload: dict[str, Any] = {"text": text}
+    if link_url:
+        payload["blocks"] = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": text},
+                "accessory": {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Open"},
+                    "url": link_url,
+                },
+            }
+        ]
+    try:
+        httpx.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
+    except Exception:
+        pass
+
+
 def _slug(text: str, max_len: int = 40) -> str:
     """Convert summary into a git-safe slug: lowercase, dashes for runs of non-alnum."""
     s = re.sub(r"[^a-zA-Z0-9]+", "-", text or "").strip("-").lower()
@@ -222,10 +246,16 @@ def main() -> int:
             continue
         gh = create_github_issue(issue)
         print(f"  CREATED {key} -> {gh['html_url']}")
+        branch = None
         if AUTO_BRANCH:
             branch = create_github_branch(key, issue["fields"]["summary"])
             if branch:
                 print(f"    branch: {branch}")
+        notify_slack(
+            f"🐙 *{key}* mirrored to GitHub: <{gh['html_url']}|#{gh['number']}>"
+            + (f"\n_branch: `{branch}`_" if branch else ""),
+            link_url=gh["html_url"],
+        )
         created += 1
     print(f"Done. created={created} skipped={skipped} total_seen={len(issues)}")
     return 0
